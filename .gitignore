@@ -1,0 +1,4 @@
+.env
+ollama-data/
+node_modules/
+.claude
