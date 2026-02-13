@@ -7,23 +7,22 @@ const {
 const qrcode = require("qrcode-terminal");
 const pino = require("pino");
 
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://ollama:11434";
-const MODEL = process.env.OLLAMA_MODEL || "dolphin-llama3:8b";
+const FUNKYBOY_URL = process.env.FUNKYBOY_URL;
 const THINKING_MSG = process.env.THINKING_MSG || "Thinking...";
-const GROUP_PREFIX = process.env.GROUP_PREFIX || "/alpacino420";
+const PREFIX = process.env.PREFIX || ".alpacino";
 
-async function askOllama(prompt) {
+async function askFunkyboy(prompt) {
   try {
-    const res = await fetch(`${OLLAMA_URL}/api/generate`, {
+    const res = await fetch(`${FUNKYBOY_URL}/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: MODEL, prompt, stream: false }),
+      body: JSON.stringify({ prompt }),
       signal: AbortSignal.timeout(120000),
     });
     const data = await res.json();
     return data.response || "No response.";
   } catch (err) {
-    console.error("Ollama error:", err.message);
+    console.error("Funkyboy error:", err.message);
     return "Sorry, brain is offline.";
   }
 }
@@ -86,15 +85,9 @@ async function start() {
       const sender = msg.pushName || jid.split("@")[0];
       const group = isGroup(jid);
 
-      // In groups, only respond to messages starting with the prefix
-      let text;
-      if (group) {
-        if (!rawText.startsWith(GROUP_PREFIX)) continue;
-        text = rawText.slice(GROUP_PREFIX.length).trim();
-        if (!text) continue;
-      } else {
-        text = rawText;
-      }
+      if (!rawText.startsWith(PREFIX)) continue;
+      const text = rawText.slice(PREFIX.length).trim();
+      if (!text) continue;
 
       console.log(`[${group ? "GROUP" : "DM"}][${sender}] ${text}`);
 
@@ -105,8 +98,8 @@ async function start() {
       // Send thinking message
       const thinkingMsg = await sock.sendMessage(jid, { text: THINKING_MSG });
 
-      // Ask Ollama
-      const reply = await askOllama(text);
+      // Ask Funkyboy
+      const reply = await askFunkyboy(text);
 
       // Stop typing
       await sock.sendPresenceUpdate("paused", jid);
@@ -120,6 +113,6 @@ async function start() {
   });
 }
 
-console.log("Starting Dolphin WhatsApp bot...");
-console.log(`Ollama: ${OLLAMA_URL} | Model: ${MODEL}`);
+console.log("Starting Funkyboy WhatsApp bot...");
+console.log(`Funkyboy: ${FUNKYBOY_URL}`);
 start();
