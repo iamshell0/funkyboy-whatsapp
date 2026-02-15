@@ -1,0 +1,6 @@
+# Use this override when running with the Ollama backend:
+#   docker compose -f docker-compose.yml -f docker-compose.ollama.yml up -d
+networks:
+  default:
+    name: funkyboy-whatsapp-net
+    external: false

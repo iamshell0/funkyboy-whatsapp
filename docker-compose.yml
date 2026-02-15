@@ -3,10 +3,15 @@ services:
     build: ./bot
     container_name: funkyboy-whatsapp
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file:
       - .env
     environment:
+      - BACKEND=${BACKEND:-funkyboy}
       - FUNKYBOY_URL=http://${FUNKYBOY_LOCAL_MODEL_HOST:-funkyboy-local-model}:${FUNKYBOY_LOCAL_MODEL_PORT:-8080}
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3}
       - THINKING_MSG=${THINKING_MSG:-un momento...}
     volumes:
       - wa-auth:/app/auth

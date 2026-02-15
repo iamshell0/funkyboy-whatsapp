@@ -12,8 +12,11 @@ cp .env.example .env
 ## Commands
 
 ```bash
-# Start (requires funkyboy-local-model running first)
+# Start with Funkyboy (default, requires funkyboy-local-model running first)
 docker compose up -d --build
+
+# Start with Ollama
+docker compose -f docker-compose.yml -f docker-compose.ollama.yml up -d --build
 
 # See QR code and scan with WhatsApp > Settings > Linked Devices
 docker compose logs -f bot
@@ -27,6 +30,24 @@ docker logs -f funkyboy-whatsapp
 # Rebuild after code changes
 docker compose up -d --build bot
 ```
+
+## Ollama Support
+
+The bot can use [Ollama](https://ollama.com) as an alternative backend. Ollama runs on the host machine (not inside Docker).
+
+1. Install and run Ollama on your server
+2. Pull your model: `ollama pull <model-name>`
+3. Add to your `.env`:
+   ```
+   BACKEND=ollama
+   OLLAMA_MODEL=<model-name>
+   ```
+4. Start with the Ollama override:
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.ollama.yml up -d --build
+   ```
+
+The override replaces the external Funkyboy network with a local one, while `extra_hosts` in the base compose file lets the container reach Ollama on the host via `host.docker.internal`.
 
 ## How it works
 
@@ -42,6 +63,9 @@ docker compose up -d --build bot
 | `PREFIX` | No | Required prefix on all messages (default: `.alpacino`) |
 | `FUNKYBOY_LOCAL_MODEL_HOST` | No | Funkyboy instance name (default: funkyboy-local-model) |
 | `FUNKYBOY_LOCAL_MODEL_PORT` | No | Funkyboy API port (default: 8080) |
+| `BACKEND` | No | `funkyboy` (default) or `ollama` |
+| `OLLAMA_URL` | No | Ollama API URL (default: `http://host.docker.internal:11434`) |
+| `OLLAMA_MODEL` | No | Ollama model name (default: `llama3`) |
 
 ## Troubleshooting
 

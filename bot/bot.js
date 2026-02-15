@@ -7,7 +7,10 @@ const {
 const qrcode = require("qrcode-terminal");
 const pino = require("pino");
 
+const BACKEND = (process.env.BACKEND || "funkyboy").toLowerCase();
 const FUNKYBOY_URL = process.env.FUNKYBOY_URL;
+const OLLAMA_URL = process.env.OLLAMA_URL || "http://host.docker.internal:11434";
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3";
 const THINKING_MSG = process.env.THINKING_MSG || "Thinking...";
 const PREFIX = process.env.PREFIX || ".alpacino";
 
@@ -25,6 +28,27 @@ async function askFunkyboy(prompt) {
     console.error("Funkyboy error:", err.message);
     return "Sorry, brain is offline.";
   }
+}
+
+async function askOllama(prompt) {
+  try {
+    const res = await fetch(`${OLLAMA_URL}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: OLLAMA_MODEL, prompt, stream: false }),
+      signal: AbortSignal.timeout(120000),
+    });
+    const data = await res.json();
+    return data.response || "No response.";
+  } catch (err) {
+    console.error("Ollama error:", err.message);
+    return "Sorry, brain is offline.";
+  }
+}
+
+async function askAI(prompt) {
+  if (BACKEND === "ollama") return askOllama(prompt);
+  return askFunkyboy(prompt);
 }
 
 function isGroup(jid) {
@@ -85,8 +109,13 @@ async function start() {
       const sender = msg.pushName || jid.split("@")[0];
       const group = isGroup(jid);
 
-      if (!rawText.startsWith(PREFIX)) continue;
-      const text = rawText.slice(PREFIX.length).trim();
+      let text;
+      if (group) {
+        if (!rawText.startsWith(PREFIX)) continue;
+        text = rawText.slice(PREFIX.length).trim();
+      } else {
+        text = rawText.trim();
+      }
       if (!text) continue;
 
       console.log(`[${group ? "GROUP" : "DM"}][${sender}] ${text}`);
@@ -98,8 +127,7 @@ async function start() {
       // Send thinking message
       const thinkingMsg = await sock.sendMessage(jid, { text: THINKING_MSG });
 
-      // Ask Funkyboy
-      const reply = await askFunkyboy(text);
+      const reply = await askAI(text);
 
       // Stop typing
       await sock.sendPresenceUpdate("paused", jid);
@@ -114,5 +142,10 @@ async function start() {
 }
 
 console.log("Starting Funkyboy WhatsApp bot...");
-console.log(`Funkyboy: ${FUNKYBOY_URL}`);
+console.log(`Backend: ${BACKEND}`);
+if (BACKEND === "ollama") {
+  console.log(`Ollama: ${OLLAMA_URL} (model: ${OLLAMA_MODEL})`);
+} else {
+  console.log(`Funkyboy: ${FUNKYBOY_URL}`);
+}
 start();
