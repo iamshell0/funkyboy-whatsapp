@@ -37,12 +37,36 @@ The bot can use [Ollama](https://ollama.com) as an alternative backend. Ollama r
 
 1. Install and run Ollama on your server
 2. Pull your model: `ollama pull <model-name>`
-3. Add to your `.env`:
+3. Configure Ollama to accept connections from Docker. By default Ollama only listens on `127.0.0.1`, which blocks Docker containers from connecting:
+   ```bash
+   sudo systemctl edit ollama
+   ```
+   Add the following and save:
+   ```
+   [Service]
+   Environment="OLLAMA_HOST=0.0.0.0"
+   ```
+   Then restart Ollama:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl restart ollama
+   ```
+   Verify it's listening on all interfaces:
+   ```bash
+   ss -tlnp | grep 11434
+   # Should show *:11434 instead of 127.0.0.1:11434
+   ```
+   **Security note:** This exposes Ollama on all interfaces. Use a firewall to restrict access to Docker only:
+   ```bash
+   sudo ufw allow from 172.16.0.0/12 to any port 11434
+   sudo ufw deny from any to any port 11434
+   ```
+4. Add to your `.env`:
    ```
    BACKEND=ollama
    OLLAMA_MODEL=<model-name>
    ```
-4. Start with the Ollama override:
+5. Start with the Ollama override:
    ```bash
    docker compose -f docker-compose.yml -f docker-compose.ollama.yml up -d --build
    ```
