@@ -55,6 +55,28 @@ function isGroup(jid) {
   return jid.endsWith("@g.us");
 }
 
+async function handleMessage(sock, jid, sender, group, text) {
+  console.log(`[${group ? "GROUP" : "DM"}][${sender}] ${text}`);
+
+  // Show typing indicator
+  await sock.presenceSubscribe(jid);
+  await sock.sendPresenceUpdate("composing", jid);
+
+  // Send thinking message
+  const thinkingMsg = await sock.sendMessage(jid, { text: THINKING_MSG });
+
+  const reply = await askAI(text);
+
+  // Stop typing
+  await sock.sendPresenceUpdate("paused", jid);
+
+  // Edit thinking message with the actual reply
+  await sock.sendMessage(jid, {
+    text: reply,
+    edit: thinkingMsg.key,
+  });
+}
+
 let activeSock = null;
 const processedMessages = new Set();
 
@@ -103,7 +125,7 @@ async function start() {
     }
   });
 
-  sock.ev.on("messages.upsert", async ({ messages, type }) => {
+  sock.ev.on("messages.upsert", ({ messages, type }) => {
     if (type !== "notify") return;
 
     for (const msg of messages) {
@@ -135,25 +157,10 @@ async function start() {
       }
       if (!text) continue;
 
-      console.log(`[${group ? "GROUP" : "DM"}][${sender}] ${text}`);
-
-      // Show typing indicator
-      await sock.presenceSubscribe(jid);
-      await sock.sendPresenceUpdate("composing", jid);
-
-      // Send thinking message
-      const thinkingMsg = await sock.sendMessage(jid, { text: THINKING_MSG });
-
-      const reply = await askAI(text);
-
-      // Stop typing
-      await sock.sendPresenceUpdate("paused", jid);
-
-      // Edit thinking message with the actual reply
-      await sock.sendMessage(jid, {
-        text: reply,
-        edit: thinkingMsg.key,
-      });
+      // Handle each message independently (don't block the loop)
+      handleMessage(sock, jid, sender, group, text).catch((err) =>
+        console.error(`Error handling message from ${sender}:`, err.message)
+      );
     }
   });
 }

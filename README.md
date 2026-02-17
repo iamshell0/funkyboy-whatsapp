@@ -13,22 +13,23 @@ cp .env.example .env
 
 ```bash
 # Start with Funkyboy (default, requires funkyboy-local-model running first)
-docker compose up -d --build
+docker compose -p funkyboy up -d --build
 
-# Start with Ollama
-docker compose -f docker-compose.yml -f docker-compose.ollama.yml up -d --build
+# Start with Ollama (use a unique project name per instance)
+docker compose -p luna --env-file .env.luna \
+  -f docker-compose.yml -f docker-compose.ollama.yml up -d --build
 
 # See QR code and scan with WhatsApp > Settings > Linked Devices
-docker compose logs -f bot
+docker compose -p <project-name> logs -f bot
 
-# Stop
-docker compose down
+# Stop a specific instance
+docker compose -p <project-name> down
 
 # Logs
-docker logs -f funkyboy-whatsapp
+docker logs -f <project-name>-bot-1
 
 # Rebuild after code changes
-docker compose up -d --build bot
+docker compose -p <project-name> up -d --build bot
 ```
 
 ## Ollama Support
@@ -66,17 +67,27 @@ The bot can use [Ollama](https://ollama.com) as an alternative backend. Ollama r
    BACKEND=ollama
    OLLAMA_MODEL=<model-name>
    ```
-5. Start with the Ollama override:
-   ```bash
-   docker compose -f docker-compose.yml -f docker-compose.ollama.yml up -d --build
+5. Create a `.env.<name>` file for your instance (e.g. `.env.luna`):
    ```
+   BACKEND=ollama
+   OLLAMA_MODEL=<model-name>
+   PREFIX=@luna
+   THINKING_MSG=🧠⌛...
+   ```
+6. Start with a unique project name:
+   ```bash
+   docker compose -p luna --env-file .env.luna \
+     -f docker-compose.yml -f docker-compose.ollama.yml up -d --build
+   ```
+
+The `-p` flag gives each instance its own container, volume (WhatsApp session), and network. You can run multiple instances simultaneously, each with a different env file and project name.
 
 The override replaces the external Funkyboy network with a local one, while `extra_hosts` in the base compose file lets the container reach Ollama on the host via `host.docker.internal`.
 
 ## How it works
 
-- Only responds to messages starting with the prefix
-  - Example: `.alpacino what is the meaning of life`
+- **Group chats**: only responds to messages starting with the prefix (e.g. `@eleven what is the meaning of life`)
+- **DMs**: responds to any message, no prefix needed
 - Session persists in a Docker volume (`wa-auth`) — only scan QR once
 
 ## Environment Variables
