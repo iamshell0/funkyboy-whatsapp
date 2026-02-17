@@ -55,7 +55,15 @@ function isGroup(jid) {
   return jid.endsWith("@g.us");
 }
 
+let activeSock = null;
+
 async function start() {
+  // Clean up previous socket listeners to prevent duplicate message handling
+  if (activeSock) {
+    activeSock.ev.removeAllListeners();
+    activeSock = null;
+  }
+
   const { state, saveCreds } = await useMultiFileAuthState("/app/auth");
 
   const sock = makeWASocket({
@@ -65,6 +73,7 @@ async function start() {
     version: [2, 3000, 1033307183],
     browser: Browsers.ubuntu("Chrome"),
   });
+  activeSock = sock;
 
   sock.ev.on("creds.update", saveCreds);
 
