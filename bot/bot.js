@@ -56,6 +56,7 @@ function isGroup(jid) {
 }
 
 let activeSock = null;
+const processedMessages = new Set();
 
 async function start() {
   // Clean up previous socket listeners to prevent duplicate message handling
@@ -108,6 +109,13 @@ async function start() {
     for (const msg of messages) {
       if (msg.key.fromMe) continue;
       if (!msg.message) continue;
+
+      // Skip already-processed messages (Baileys can emit duplicates)
+      const msgId = msg.key.id;
+      if (processedMessages.has(msgId)) continue;
+      processedMessages.add(msgId);
+      // Keep the set from growing forever
+      if (processedMessages.size > 1000) processedMessages.clear();
 
       const rawText =
         msg.message.conversation || msg.message.extendedTextMessage?.text;
