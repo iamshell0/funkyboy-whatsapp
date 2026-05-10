@@ -16,9 +16,11 @@ services:
       - IMAGE_THINKING_MSG=${IMAGE_THINKING_MSG:-Generando imagen...}
       - SEARCH_URL=${SEARCH_URL:-}
       - PROMPTS_DIR=/app/prompts
+      - NODE_EXTRA_CA_CERTS=${NODE_EXTRA_CA_CERTS:-/app/certs/extra-ca.pem}
     volumes:
       - wa-auth:/app/auth
       - ./prompts:/app/prompts:ro,Z
+      - ./certs:/app/certs:ro,Z
 
 volumes:
   wa-auth:

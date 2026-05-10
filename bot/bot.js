@@ -17,13 +17,38 @@ const LLM_MODEL = process.env.LLM_MODEL || "qwen3.5-9b";
 const LLM_API_KEY = process.env.LLM_API_KEY || "sk-local";
 
 const IMG_URL = process.env.IMG_URL || "";
-const IMG_MODEL = process.env.IMG_MODEL || "";
-const IMG_TRIGGERS = (process.env.IMAGE_TRIGGERS || "/imagen,/img,/draw")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
 const IMG_POLL_INTERVAL_MS = 4000;
 const IMG_MAX_POLLS = 75;
+
+// Image variants: default comes from IMAGE_TRIGGERS / IMG_MODEL.
+// Additional variants from IMAGE_TRIGGERS_<KEY> / IMG_MODEL_<KEY>.
+function loadImageVariants() {
+  const variants = [];
+  const defaultTriggers = (process.env.IMAGE_TRIGGERS || "/imagen,/img,/draw")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (defaultTriggers.length) {
+    variants.push({ name: "default", triggers: defaultTriggers, model: process.env.IMG_MODEL || "" });
+  }
+  const keys = new Set();
+  for (const k of Object.keys(process.env)) {
+    let m;
+    if ((m = k.match(/^IMAGE_TRIGGERS_(.+)$/))) keys.add(m[1]);
+    if ((m = k.match(/^IMG_MODEL_(.+)$/))) keys.add(m[1]);
+  }
+  for (const key of keys) {
+    const triggers = (process.env[`IMAGE_TRIGGERS_${key}`] || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const model = process.env[`IMG_MODEL_${key}`] || "";
+    if (!triggers.length) continue;
+    variants.push({ name: key.toLowerCase(), triggers, model });
+  }
+  return variants;
+}
+const IMG_VARIANTS = loadImageVariants();
 
 const SEARCH_URL = process.env.SEARCH_URL || "";
 
@@ -60,7 +85,7 @@ function loadPrompt(name) {
 const PERSONAS = personaNames.map((name) => ({
   name,
   prompt: loadPrompt(name),
-  prefix: process.env[`${name.toUpperCase()}_PREFIX`] || `.${name}`,
+  groupTrigger: (process.env[`${name.toUpperCase()}_GROUP_TRIGGER`] || `@${name}`).toLowerCase(),
   model: process.env[`${name.toUpperCase()}_MODEL`] || LLM_MODEL,
 }));
 
@@ -119,7 +144,7 @@ async function chat(model, systemPrompt, userPrompt) {
             Authorization: `Bearer ${LLM_API_KEY}`,
           },
           body: JSON.stringify(body),
-          signal: AbortSignal.timeout(120000),
+          signal: AbortSignal.timeout(180000),
         });
 
         if (!res.ok) {
@@ -169,55 +194,75 @@ async function chat(model, systemPrompt, userPrompt) {
 }
 
 function parseImageCommand(text) {
-  for (const trig of IMG_TRIGGERS) {
-    if (text === trig) return "";
-    if (text.startsWith(trig + " ")) return text.slice(trig.length).trim();
+  for (const v of IMG_VARIANTS) {
+    for (const trig of v.triggers) {
+      if (text === trig) return { variant: v, prompt: "" };
+      if (text.startsWith(trig + " ")) return { variant: v, prompt: text.slice(trig.length).trim() };
+    }
   }
   return null;
 }
 
-async function generateImage(prompt) {
+async function generateImage(prompt, model) {
   if (!IMG_URL) throw new Error("IMG_URL not configured");
+  const t0 = Date.now();
+  const elapsed = () => Math.round((Date.now() - t0) / 1000);
 
   const body = { prompt };
-  if (IMG_MODEL) body.model = IMG_MODEL;
+  if (model) body.model = model;
 
-  const submit = await fetch(`${IMG_URL}/v1/generate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(15000),
-  });
+  let submit;
+  try {
+    submit = await fetch(`${IMG_URL}/v1/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(90000),
+    });
+  } catch (err) {
+    throw new Error(`submit failed after ${elapsed()}s: ${err.message}`);
+  }
   if (!submit.ok) {
     const errBody = await submit.text().catch(() => "");
-    throw new Error(`submit failed: ${submit.status} ${errBody}`);
+    throw new Error(`submit HTTP ${submit.status} after ${elapsed()}s: ${errBody}`);
   }
   const submitData = await submit.json();
   const jobId = submitData.job_id;
-  if (!jobId) throw new Error("no job_id in submit response");
+  if (!jobId) throw new Error(`no job_id in submit response after ${elapsed()}s`);
 
   for (let i = 0; i < IMG_MAX_POLLS; i++) {
     await new Promise((r) => setTimeout(r, IMG_POLL_INTERVAL_MS));
-    const poll = await fetch(`${IMG_URL}/v1/jobs/${jobId}`, {
-      signal: AbortSignal.timeout(10000),
-    });
+    let poll;
+    try {
+      poll = await fetch(`${IMG_URL}/v1/jobs/${jobId}`, {
+        signal: AbortSignal.timeout(30000),
+      });
+    } catch (err) {
+      console.warn(`[img ${jobId}] poll error at ${elapsed()}s: ${err.message}`);
+      continue;
+    }
     if (!poll.ok) continue;
     const data = await poll.json();
     if (data.status === "done") {
       const filename = data.images?.[0];
-      if (!filename) throw new Error("no filename in done response");
-      const dl = await fetch(`${IMG_URL}/outputs/${filename}`, {
-        signal: AbortSignal.timeout(60000),
-      });
-      if (!dl.ok) throw new Error(`download failed: ${dl.status}`);
+      if (!filename) throw new Error(`no filename in done response after ${elapsed()}s`);
+      let dl;
+      try {
+        dl = await fetch(`${IMG_URL}/outputs/${filename}`, {
+          signal: AbortSignal.timeout(60000),
+        });
+      } catch (err) {
+        throw new Error(`download failed after ${elapsed()}s: ${err.message}`);
+      }
+      if (!dl.ok) throw new Error(`download HTTP ${dl.status} after ${elapsed()}s`);
       const buffer = Buffer.from(await dl.arrayBuffer());
-      return { buffer, filename };
+      return { buffer, filename, elapsedSec: elapsed() };
     }
     if (data.status === "failed") {
-      throw new Error(`generation failed: ${data.error || "unknown"}`);
+      throw new Error(`generation failed after ${elapsed()}s: ${data.error || "unknown"}`);
     }
   }
-  throw new Error("timed out waiting for image");
+  throw new Error(`timed out after ${elapsed()}s waiting for image (job ${jobId})`);
 }
 
 function isGroup(jid) {
@@ -270,27 +315,41 @@ async function startPersona(persona) {
   });
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    if (type !== "notify") return;
+    if (type !== "notify" && type !== "append") return;
 
     for (const msg of messages) {
       if (msg.key.fromMe) continue;
       if (!msg.message) continue;
 
-      const rawText = msg.message.conversation || msg.message.extendedTextMessage?.text;
+      const rawText =
+        msg.message.conversation ||
+        msg.message.extendedTextMessage?.text ||
+        msg.message.imageMessage?.caption ||
+        msg.message.videoMessage?.caption;
       if (!rawText) continue;
-      if (!rawText.startsWith(persona.prefix)) continue;
-
-      const text = rawText.slice(persona.prefix.length).trim();
-      if (!text) continue;
 
       const jid = msg.key.remoteJid;
-      const sender = msg.pushName || jid.split("@")[0];
+      const sender = msg.pushName || (msg.key.participant || jid).split("@")[0];
       const group = isGroup(jid);
+
+      let text;
+      if (group) {
+        const lowerRaw = rawText.toLowerCase();
+        const idx = lowerRaw.indexOf(persona.groupTrigger);
+        if (idx === -1) {
+          console.log(`${tag}[GROUP-skip][${sender}] ${rawText.slice(0, 80)}`);
+          continue;
+        }
+        text = (rawText.slice(0, idx) + rawText.slice(idx + persona.groupTrigger.length)).trim();
+      } else {
+        text = rawText.trim();
+      }
+      if (!text) continue;
 
       console.log(`${tag}[${group ? "GROUP" : "DM"}][${sender}] ${text}`);
 
-      const imgPrompt = parseImageCommand(text);
-      const isImage = imgPrompt !== null && IMG_URL;
+      const imgCmd = parseImageCommand(text);
+      const isImage = imgCmd !== null && IMG_URL;
 
       await sock.presenceSubscribe(jid);
       await sock.sendPresenceUpdate("composing", jid);
@@ -301,16 +360,17 @@ async function startPersona(persona) {
 
       try {
         if (isImage) {
-          if (!imgPrompt) {
+          if (!imgCmd.prompt) {
             await sock.sendMessage(jid, {
               text: "¿Qué quieres que dibuje?",
               edit: thinkingMsg.key,
             });
           } else {
-            const img = await generateImage(imgPrompt);
+            console.log(`${tag}[img:${imgCmd.variant.name}] ${imgCmd.prompt}`);
+            const img = await generateImage(imgCmd.prompt, imgCmd.variant.model);
             await sock.sendMessage(jid, {
               image: img.buffer,
-              caption: imgPrompt,
+              caption: imgCmd.prompt,
             });
             await sock.sendMessage(jid, { text: "✓", edit: thinkingMsg.key });
           }
@@ -334,9 +394,11 @@ async function startPersona(persona) {
 console.log("Starting Funkyboy WhatsApp bot...");
 console.log(`LLM endpoints: ${LLM_URLS.join(" → ")} (default model: ${LLM_MODEL})`);
 console.log(`Image gen: ${IMG_URL ? IMG_URL : "(disabled)"}`);
-console.log(`Image triggers: ${IMG_TRIGGERS.join(", ")}`);
+for (const v of IMG_VARIANTS) {
+  console.log(`  variant ${v.name}: ${v.triggers.join(", ")} → ${v.model || "(server default)"}`);
+}
 console.log(`Search: ${SEARCH_URL ? SEARCH_URL : "(disabled)"}`);
-console.log(`Personas: ${PERSONAS.map((p) => `${p.name} ${p.prefix} → ${p.model}`).join(", ")}`);
+console.log(`Personas: ${PERSONAS.map((p) => `${p.name} (DM=any, group="${p.groupTrigger}") → ${p.model}`).join(", ")}`);
 
 for (const persona of PERSONAS) {
   startPersona(persona).catch((err) =>

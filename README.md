@@ -28,7 +28,7 @@ Personas are configured entirely via env vars and prompt files. List the names i
 |---|---|---|
 | `prompts/<name>.md` | Yes (or env fallback) | Multi-line system prompt for this persona |
 | `{NAME}_PROMPT` | Fallback | Used only if `prompts/<name>.md` is missing |
-| `{NAME}_PREFIX` | No | Trigger prefix (default `.{name}`) |
+| `{NAME}_GROUP_TRIGGER` | No | Group at-mention (default `@{name}`, case-insensitive) |
 | `{NAME}_MODEL` | No | Per-persona model override (default `LLM_MODEL`) |
 
 Names must be lowercase, `[a-z][a-z0-9_]*`.
@@ -43,7 +43,10 @@ prompts/alice.md   ← Alice's system prompt
 prompts/bob.md     ← Bob's system prompt
 ```
 
-`.alice ...` in WhatsApp goes to Alice; `.bob ...` goes to Bob.
+### How messages are routed
+
+- **DMs**: each persona has its own WhatsApp account. Any DM to that account is handled by that persona — no trigger needed.
+- **Groups**: a persona only replies when its `{NAME}_GROUP_TRIGGER` (default `@{name}`) appears in the message text. The trigger is stripped before being sent to the LLM. Match is case-insensitive and can appear anywhere in the message.
 
 ## Image generation
 
@@ -84,7 +87,7 @@ docker compose up -d --build bot
 ## How it works
 
 - Each persona has its own WhatsApp account, its own auth folder under the `wa-auth` volume (`/app/auth/<name>`), and its own system prompt.
-- A persona only responds to messages starting with its prefix.
+- DMs always reach the matching persona. In groups, the message must contain the persona's `@<name>` trigger.
 - Sessions persist in the `wa-auth` volume — only scan each QR once.
 - Prompt files (`prompts/<name>.md`) are read at startup. Restart the container to pick up changes.
 
@@ -101,7 +104,7 @@ docker compose up -d --build bot
 | `THINKING_MSG` | No | Loading message for chat |
 | `IMAGE_THINKING_MSG` | No | Loading message for image gen |
 | `PERSONAS` | Yes | Comma-separated persona names |
-| `{NAME}_PREFIX` | No | Trigger prefix (default `.{name}`) |
+| `{NAME}_GROUP_TRIGGER` | No | Group at-mention (default `@{name}`) |
 | `{NAME}_MODEL` | No | Per-persona model override |
 | `{NAME}_PROMPT` | No | Fallback if `prompts/<name>.md` is missing |
 
