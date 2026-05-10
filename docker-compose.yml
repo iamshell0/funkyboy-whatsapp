@@ -6,15 +6,18 @@ services:
     env_file:
       - .env
     environment:
-      - FUNKYBOY_URL=http://${FUNKYBOY_LOCAL_MODEL_HOST:-funkyboy-local-model}:${FUNKYBOY_LOCAL_MODEL_PORT:-8080}
-      - THINKING_MSG=${THINKING_MSG:-un momento...}
+      - LLM_URL=${LLM_URL:-http://localhost:8080/v1}
+      - LLM_MODEL=${LLM_MODEL:-qwen3.5-9b}
+      - LLM_API_KEY=${LLM_API_KEY:-sk-local}
+      - IMG_URL=${IMG_URL:-}
+      - IMG_MODEL=${IMG_MODEL:-}
+      - IMAGE_TRIGGERS=${IMAGE_TRIGGERS:-/imagen,/img,/draw}
+      - THINKING_MSG=${THINKING_MSG:-Thinking...}
+      - IMAGE_THINKING_MSG=${IMAGE_THINKING_MSG:-Generando imagen...}
+      - PROMPTS_DIR=/app/prompts
     volumes:
       - wa-auth:/app/auth
+      - ./prompts:/app/prompts:ro,Z
 
 volumes:
   wa-auth:
-
-networks:
-  default:
-    name: ${FUNKYBOY_LOCAL_MODEL_HOST:-funkyboy-local-model}-net
-    external: true

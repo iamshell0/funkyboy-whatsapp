@@ -1,3 +1,5 @@
+const fs = require("fs");
+const path = require("path");
 const makeWASocket = require("@whiskeysockets/baileys").default;
 const {
   useMultiFileAuthState,
@@ -7,32 +9,165 @@ const {
 const qrcode = require("qrcode-terminal");
 const pino = require("pino");
 
-const FUNKYBOY_URL = process.env.FUNKYBOY_URL;
-const THINKING_MSG = process.env.THINKING_MSG || "Thinking...";
-const PREFIX = process.env.PREFIX || ".alpacino";
+const LLM_URLS = (process.env.LLM_URL || "http://localhost:8080/v1")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const LLM_MODEL = process.env.LLM_MODEL || "qwen3.5-9b";
+const LLM_API_KEY = process.env.LLM_API_KEY || "sk-local";
 
-async function askFunkyboy(prompt) {
-  try {
-    const res = await fetch(`${FUNKYBOY_URL}/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt }),
-      signal: AbortSignal.timeout(120000),
-    });
-    const data = await res.json();
-    return data.response || "No response.";
-  } catch (err) {
-    console.error("Funkyboy error:", err.message);
-    return "Sorry, brain is offline.";
+const IMG_URL = process.env.IMG_URL || "";
+const IMG_MODEL = process.env.IMG_MODEL || "";
+const IMG_TRIGGERS = (process.env.IMAGE_TRIGGERS || "/imagen,/img,/draw")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const IMG_POLL_INTERVAL_MS = 4000;
+const IMG_MAX_POLLS = 75;
+
+const PROMPTS_DIR = process.env.PROMPTS_DIR || "/app/prompts";
+const THINKING_MSG = process.env.THINKING_MSG || "Thinking...";
+const IMAGE_THINKING_MSG = process.env.IMAGE_THINKING_MSG || "Generando imagen...";
+
+const personaNames = (process.env.PERSONAS || "")
+  .split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+
+if (personaNames.length === 0) {
+  console.error("No personas configured. Set PERSONAS in your .env, e.g. PERSONAS=alice,bob");
+  process.exit(1);
+}
+
+for (const name of personaNames) {
+  if (!/^[a-z][a-z0-9_]*$/.test(name)) {
+    console.error(`Invalid persona name "${name}". Use lowercase letters/digits/underscores, starting with a letter.`);
+    process.exit(1);
   }
+}
+
+function loadPrompt(name) {
+  const filePath = path.join(PROMPTS_DIR, `${name}.md`);
+  try {
+    const fileContent = fs.readFileSync(filePath, "utf8").trim();
+    if (fileContent) return fileContent;
+  } catch (_) {}
+  return process.env[`${name.toUpperCase()}_PROMPT`] || "";
+}
+
+const PERSONAS = personaNames.map((name) => ({
+  name,
+  prompt: loadPrompt(name),
+  prefix: process.env[`${name.toUpperCase()}_PREFIX`] || `.${name}`,
+  model: process.env[`${name.toUpperCase()}_MODEL`] || LLM_MODEL,
+}));
+
+for (const p of PERSONAS) {
+  if (!p.prompt) {
+    console.warn(
+      `[${p.name}] no prompt found at ${PROMPTS_DIR}/${p.name}.md or ${p.name.toUpperCase()}_PROMPT — running with empty system prompt.`
+    );
+  }
+}
+
+async function chat(model, systemPrompt, userPrompt) {
+  const messages = [];
+  if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
+  messages.push({ role: "user", content: userPrompt });
+
+  let lastErr;
+  for (const baseUrl of LLM_URLS) {
+    try {
+      const res = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${LLM_API_KEY}`,
+        },
+        body: JSON.stringify({ model, messages }),
+        signal: AbortSignal.timeout(120000),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        if (res.status >= 500) {
+          lastErr = new Error(`${baseUrl} HTTP ${res.status}: ${body}`);
+          console.warn(`LLM ${baseUrl} returned ${res.status}, trying next endpoint`);
+          continue;
+        }
+        console.error(`LLM ${baseUrl} HTTP ${res.status}:`, body);
+        return "Sorry, brain is offline.";
+      }
+      const data = await res.json();
+      return data.choices?.[0]?.message?.content?.trim() || "No response.";
+    } catch (err) {
+      lastErr = err;
+      console.warn(`LLM ${baseUrl} failed: ${err.message}`);
+    }
+  }
+  console.error("All LLM endpoints failed:", lastErr?.message);
+  return "Sorry, brain is offline.";
+}
+
+function parseImageCommand(text) {
+  for (const trig of IMG_TRIGGERS) {
+    if (text === trig) return "";
+    if (text.startsWith(trig + " ")) return text.slice(trig.length).trim();
+  }
+  return null;
+}
+
+async function generateImage(prompt) {
+  if (!IMG_URL) throw new Error("IMG_URL not configured");
+
+  const body = { prompt };
+  if (IMG_MODEL) body.model = IMG_MODEL;
+
+  const submit = await fetch(`${IMG_URL}/v1/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!submit.ok) {
+    const errBody = await submit.text().catch(() => "");
+    throw new Error(`submit failed: ${submit.status} ${errBody}`);
+  }
+  const submitData = await submit.json();
+  const jobId = submitData.job_id;
+  if (!jobId) throw new Error("no job_id in submit response");
+
+  for (let i = 0; i < IMG_MAX_POLLS; i++) {
+    await new Promise((r) => setTimeout(r, IMG_POLL_INTERVAL_MS));
+    const poll = await fetch(`${IMG_URL}/v1/jobs/${jobId}`, {
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!poll.ok) continue;
+    const data = await poll.json();
+    if (data.status === "done") {
+      const filename = data.images?.[0];
+      if (!filename) throw new Error("no filename in done response");
+      const dl = await fetch(`${IMG_URL}/outputs/${filename}`, {
+        signal: AbortSignal.timeout(60000),
+      });
+      if (!dl.ok) throw new Error(`download failed: ${dl.status}`);
+      const buffer = Buffer.from(await dl.arrayBuffer());
+      return { buffer, filename };
+    }
+    if (data.status === "failed") {
+      throw new Error(`generation failed: ${data.error || "unknown"}`);
+    }
+  }
+  throw new Error("timed out waiting for image");
 }
 
 function isGroup(jid) {
   return jid.endsWith("@g.us");
 }
 
-async function start() {
-  const { state, saveCreds } = await useMultiFileAuthState("/app/auth");
+async function startPersona(persona) {
+  const tag = `[${persona.name}]`;
+  const authDir = `/app/auth/${persona.name}`;
+  const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
   const sock = makeWASocket({
     auth: state,
@@ -48,24 +183,29 @@ async function start() {
     const { qr, connection, lastDisconnect } = update;
 
     if (qr) {
-      console.log("\n========== SCAN THIS QR CODE ==========");
+      console.log(`\n========== SCAN QR FOR ${persona.name.toUpperCase()} ==========`);
       qrcode.generate(qr, { small: true });
-      console.log("=======================================\n");
+      console.log("=================================================\n");
     }
 
     if (connection === "close") {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
-      console.log("Connection closed. Status code:", statusCode, "Error:", lastDisconnect?.error?.message || lastDisconnect?.error);
+      console.log(
+        `${tag} Connection closed. Status:`,
+        statusCode,
+        "Error:",
+        lastDisconnect?.error?.message || lastDisconnect?.error
+      );
       if (statusCode !== DisconnectReason.loggedOut) {
-        console.log("Reconnecting in 3s...");
-        setTimeout(start, 3000);
+        console.log(`${tag} Reconnecting in 3s...`);
+        setTimeout(() => startPersona(persona), 3000);
       } else {
         console.log(
-          "Logged out. Delete the auth volume and restart to re-authenticate."
+          `${tag} Logged out. Delete ${authDir} (in the wa-auth volume) and restart to re-authenticate.`
         );
       }
     } else if (connection === "open") {
-      console.log("WhatsApp connected!");
+      console.log(`${tag} WhatsApp connected!`);
     }
   });
 
@@ -76,43 +216,69 @@ async function start() {
       if (msg.key.fromMe) continue;
       if (!msg.message) continue;
 
-      const rawText =
-        msg.message.conversation || msg.message.extendedTextMessage?.text;
-
+      const rawText = msg.message.conversation || msg.message.extendedTextMessage?.text;
       if (!rawText) continue;
+      if (!rawText.startsWith(persona.prefix)) continue;
+
+      const text = rawText.slice(persona.prefix.length).trim();
+      if (!text) continue;
 
       const jid = msg.key.remoteJid;
       const sender = msg.pushName || jid.split("@")[0];
       const group = isGroup(jid);
 
-      if (!rawText.startsWith(PREFIX)) continue;
-      const text = rawText.slice(PREFIX.length).trim();
-      if (!text) continue;
+      console.log(`${tag}[${group ? "GROUP" : "DM"}][${sender}] ${text}`);
 
-      console.log(`[${group ? "GROUP" : "DM"}][${sender}] ${text}`);
+      const imgPrompt = parseImageCommand(text);
+      const isImage = imgPrompt !== null && IMG_URL;
 
-      // Show typing indicator
       await sock.presenceSubscribe(jid);
       await sock.sendPresenceUpdate("composing", jid);
 
-      // Send thinking message
-      const thinkingMsg = await sock.sendMessage(jid, { text: THINKING_MSG });
-
-      // Ask Funkyboy
-      const reply = await askFunkyboy(text);
-
-      // Stop typing
-      await sock.sendPresenceUpdate("paused", jid);
-
-      // Edit thinking message with the actual reply
-      await sock.sendMessage(jid, {
-        text: reply,
-        edit: thinkingMsg.key,
+      const thinkingMsg = await sock.sendMessage(jid, {
+        text: isImage ? IMAGE_THINKING_MSG : THINKING_MSG,
       });
+
+      try {
+        if (isImage) {
+          if (!imgPrompt) {
+            await sock.sendMessage(jid, {
+              text: "¿Qué quieres que dibuje?",
+              edit: thinkingMsg.key,
+            });
+          } else {
+            const img = await generateImage(imgPrompt);
+            await sock.sendMessage(jid, {
+              image: img.buffer,
+              caption: imgPrompt,
+            });
+            await sock.sendMessage(jid, { text: "✓", edit: thinkingMsg.key });
+          }
+        } else {
+          const reply = await chat(persona.model, persona.prompt, text);
+          await sock.sendMessage(jid, { text: reply, edit: thinkingMsg.key });
+        }
+      } catch (err) {
+        console.error(`${tag} handler error:`, err.message);
+        await sock.sendMessage(jid, {
+          text: `Error: ${err.message}`,
+          edit: thinkingMsg.key,
+        });
+      } finally {
+        await sock.sendPresenceUpdate("paused", jid);
+      }
     }
   });
 }
 
 console.log("Starting Funkyboy WhatsApp bot...");
-console.log(`Funkyboy: ${FUNKYBOY_URL}`);
-start();
+console.log(`LLM endpoints: ${LLM_URLS.join(" → ")} (default model: ${LLM_MODEL})`);
+console.log(`Image gen: ${IMG_URL ? IMG_URL : "(disabled)"}`);
+console.log(`Image triggers: ${IMG_TRIGGERS.join(", ")}`);
+console.log(`Personas: ${PERSONAS.map((p) => `${p.name} ${p.prefix} → ${p.model}`).join(", ")}`);
+
+for (const persona of PERSONAS) {
+  startPersona(persona).catch((err) =>
+    console.error(`[${persona.name}] failed to start:`, err)
+  );
+}

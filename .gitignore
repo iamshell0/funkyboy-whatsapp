@@ -1,4 +1,5 @@
 .env
-ollama-data/
 node_modules/
 .claude
+prompts/*.md
+!prompts/example.md
