@@ -14,6 +14,7 @@ services:
       - IMAGE_TRIGGERS=${IMAGE_TRIGGERS:-/imagen,/img,/draw}
       - THINKING_MSG=${THINKING_MSG:-Thinking...}
       - IMAGE_THINKING_MSG=${IMAGE_THINKING_MSG:-Generando imagen...}
+      - SEARCH_URL=${SEARCH_URL:-}
       - PROMPTS_DIR=/app/prompts
     volumes:
       - wa-auth:/app/auth

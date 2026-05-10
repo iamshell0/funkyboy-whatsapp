@@ -25,6 +25,8 @@ const IMG_TRIGGERS = (process.env.IMAGE_TRIGGERS || "/imagen,/img,/draw")
 const IMG_POLL_INTERVAL_MS = 4000;
 const IMG_MAX_POLLS = 75;
 
+const SEARCH_URL = process.env.SEARCH_URL || "";
+
 const PROMPTS_DIR = process.env.PROMPTS_DIR || "/app/prompts";
 const THINKING_MSG = process.env.THINKING_MSG || "Thinking...";
 const IMAGE_THINKING_MSG = process.env.IMAGE_THINKING_MSG || "Generando imagen...";
@@ -70,35 +72,93 @@ for (const p of PERSONAS) {
   }
 }
 
+const SEARCH_TOOL = {
+  type: "function",
+  function: {
+    name: "web_search",
+    description: "Search the web for current information, news, facts, or anything you are not certain about.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "The search query" },
+      },
+      required: ["query"],
+    },
+  },
+};
+
+async function searchWeb(query) {
+  const url = `${SEARCH_URL}/search?q=${encodeURIComponent(query)}&format=json&categories=general`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+  if (!res.ok) throw new Error(`Search HTTP ${res.status}`);
+  const data = await res.json();
+  const results = (data.results || []).slice(0, 5)
+    .map((r) => `${r.title}\n${r.url}\n${r.content || ""}`.trim())
+    .join("\n\n");
+  return results || "No results found.";
+}
+
 async function chat(model, systemPrompt, userPrompt) {
   const messages = [];
   if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
   messages.push({ role: "user", content: userPrompt });
 
+  const tools = SEARCH_URL ? [SEARCH_TOOL] : undefined;
+
   let lastErr;
-  for (const baseUrl of LLM_URLS) {
+  outer: for (const baseUrl of LLM_URLS) {
     try {
-      const res = await fetch(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${LLM_API_KEY}`,
-        },
-        body: JSON.stringify({ model, messages }),
-        signal: AbortSignal.timeout(120000),
-      });
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        if (res.status >= 500) {
-          lastErr = new Error(`${baseUrl} HTTP ${res.status}: ${body}`);
-          console.warn(`LLM ${baseUrl} returned ${res.status}, trying next endpoint`);
-          continue;
+      for (let round = 0; round < 4; round++) {
+        const body = { model, messages };
+        if (tools) { body.tools = tools; body.tool_choice = "auto"; }
+
+        const res = await fetch(`${baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${LLM_API_KEY}`,
+          },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(120000),
+        });
+
+        if (!res.ok) {
+          const errBody = await res.text().catch(() => "");
+          if (res.status >= 500) {
+            lastErr = new Error(`${baseUrl} HTTP ${res.status}: ${errBody}`);
+            console.warn(`LLM ${baseUrl} returned ${res.status}, trying next endpoint`);
+            continue outer;
+          }
+          console.error(`LLM ${baseUrl} HTTP ${res.status}:`, errBody);
+          return "Sorry, brain is offline.";
         }
-        console.error(`LLM ${baseUrl} HTTP ${res.status}:`, body);
-        return "Sorry, brain is offline.";
+
+        const data = await res.json();
+        const msg = data.choices?.[0]?.message;
+        if (!msg) return "No response.";
+
+        if (!msg.tool_calls || msg.tool_calls.length === 0) {
+          return msg.content?.trim() || "No response.";
+        }
+
+        messages.push(msg);
+        for (const tc of msg.tool_calls) {
+          let result = "Unknown tool.";
+          if (tc.function.name === "web_search") {
+            try {
+              const args = JSON.parse(tc.function.arguments);
+              result = await searchWeb(args.query);
+              console.log(`[search] "${args.query}" → ${result.length} chars`);
+            } catch (e) {
+              result = `Search error: ${e.message}`;
+            }
+          }
+          messages.push({ role: "tool", tool_call_id: tc.id, content: result });
+        }
       }
-      const data = await res.json();
-      return data.choices?.[0]?.message?.content?.trim() || "No response.";
+      // exhausted rounds — return last assistant message
+      const last = [...messages].reverse().find((m) => m.role === "assistant");
+      return last?.content?.trim() || "No response.";
     } catch (err) {
       lastErr = err;
       console.warn(`LLM ${baseUrl} failed: ${err.message}`);
@@ -275,6 +335,7 @@ console.log("Starting Funkyboy WhatsApp bot...");
 console.log(`LLM endpoints: ${LLM_URLS.join(" → ")} (default model: ${LLM_MODEL})`);
 console.log(`Image gen: ${IMG_URL ? IMG_URL : "(disabled)"}`);
 console.log(`Image triggers: ${IMG_TRIGGERS.join(", ")}`);
+console.log(`Search: ${SEARCH_URL ? SEARCH_URL : "(disabled)"}`);
 console.log(`Personas: ${PERSONAS.map((p) => `${p.name} ${p.prefix} → ${p.model}`).join(", ")}`);
 
 for (const persona of PERSONAS) {
